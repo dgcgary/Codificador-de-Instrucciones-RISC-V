@@ -49,9 +49,26 @@ INSTRUCTION_SET = {
 def parse_register(reg_str: str) -> int:
     """Extrae el número entero de un registro (ej. 'x5' -> 5)"""
     reg_str = reg_str.strip()
-    if reg_str.startswith("x"):
-        return int(reg_str[1:])
-    raise ValueError(f"Registro inválido: {reg_str}")
+
+    # Verifica que el registro tenga exactamente el formato x seguido
+    # de uno o más dígitos.
+    match = re.fullmatch(r"x(\d+)", reg_str)
+    if not match:
+        raise ValueError(
+            f"Registro inválido: {reg_str}. "
+            "Debe utilizarse un registro entre x0 y x31."
+        )
+
+    register_number = int(match.group(1))
+
+    # RV32I únicamente tiene los registros x0 hasta x31.
+    if register_number < 0 or register_number > 31:
+        raise ValueError(
+            f"Registro inválido: {reg_str}. "
+            "Los registros permitidos son x0 hasta x31."
+        )
+
+    return register_number
 
 def parse_instruction(instruction: str):
     """Divide el texto ingresado en (mnemónico, resto_de_operandos)"""
@@ -101,13 +118,13 @@ def encode_I(mnemonic: str, operands_str: str) -> int:
         
         rd = parse_register(operands[0])
         
-        # Busca un número opcionalmente negativo, seguido de "(x" y otro número ")
-        match = re.match(r"([+-]?\d+)\s*\(\s*x(\d+)\s*\)", operands[1])
+        # Busca un número opcionalmente negativo, seguido de "(x" y otro número ")"
+        match = re.fullmatch(r"([+-]?\d+)\s*\(\s*x(\d+)\s*\)", operands[1])
         if not match:
             raise ValueError(f"Formato offset(rs1) inválido: {operands[1]}")
         
         imm = int(match.group(1))
-        rs1 = int(match.group(2))
+        rs1 = parse_register("x" + match.group(2))
     else:
         # Para aritméticas (addi, andi), el formato es: rd, rs1, imm
         operands = [x.strip() for x in operands_str.split(",")]
@@ -117,6 +134,14 @@ def encode_I(mnemonic: str, operands_str: str) -> int:
         rd = parse_register(operands[0])
         rs1 = parse_register(operands[1])
         imm = int(operands[2])
+
+    # Un inmediato de 12 bits con signo puede representar valores
+    # desde -2048 hasta 2047.
+    if imm < -2048 or imm > 2047:
+        raise ValueError(
+            f"Inmediato fuera de rango: {imm}. "
+            "El rango permitido es -2048 hasta 2047."
+        )
     
     # El inmediato en Formato I es de 12 bits. 
     # La máscara 0xFFF (4095 en decimal) fuerza la extensión de signo a nivel de 12 bits en Python.
@@ -139,12 +164,20 @@ def encode_S(mnemonic: str, operands_str: str) -> int:
     
     rs2 = parse_register(operands[0])
     
-    match = re.match(r"([+-]?\d+)\s*\(\s*x(\d+)\s*\)", operands[1])
+    match = re.fullmatch(r"([+-]?\d+)\s*\(\s*x(\d+)\s*\)", operands[1])
     if not match:
         raise ValueError(f"Formato offset(rs1) inválido: {operands[1]}")
     
     imm = int(match.group(1))
-    rs1 = int(match.group(2))
+    rs1 = parse_register("x" + match.group(2))
+
+    # Un inmediato de 12 bits con signo puede representar valores
+    # desde -2048 hasta 2047.
+    if imm < -2048 or imm > 2047:
+        raise ValueError(
+            f"Inmediato fuera de rango: {imm}. "
+            "El rango permitido es -2048 hasta 2047."
+        )
     
     # Máscara de 12 bits para procesar negativos correctamente
     imm = imm & 0xFFF
@@ -176,6 +209,23 @@ def encode_B(mnemonic: str, operands_str: str) -> int:
     
     # Los saltos en RISC-V usan desplazamientos en múltiplos de 2 (el bit 0 siempre es 0).
     # Se procesa como un inmediato de 13 bits (máscara 0x1FFF).
+
+    # Un inmediato de branch de 13 bits con signo puede representar
+    # valores desde -4096 hasta 4094.
+    if imm < -4096 or imm > 4094:
+        raise ValueError(
+            f"Offset fuera de rango: {imm}. "
+            "El rango permitido es -4096 hasta 4094."
+        )
+
+    # El bit menos significativo debe ser cero porque los offsets
+    # de branch siempre son pares.
+    if imm % 2 != 0:
+        raise ValueError(
+            f"Offset inválido: {imm}. "
+            "Los offsets de branch deben ser pares."
+        )
+
     imm = imm & 0x1FFF
     
     # imm[12] va al bit 31
@@ -240,7 +290,13 @@ def main():
         sys.exit(2)
 
     instruction = sys.argv[1]
-    word = encode_instruction(instruction) & 0xFFFFFFFF
+
+    try:
+        word = encode_instruction(instruction) & 0xFFFFFFFF
+    except ValueError as error:
+        # Los errores de validación se muestran sin generar una codificación.
+        print(f"Error: {error}", file=sys.stderr)
+        sys.exit(1)
 
     print(explain_instruction(instruction, word))
 
