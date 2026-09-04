@@ -85,10 +85,9 @@ def run_command(command):
     return result.stdout
 
 
-def get_toolchain_hex(object_file, instruction_address):
+def get_toolchain_hex(object_file):
     """
-    Obtiene el hexadecimal de la instrucción ubicada en una dirección
-    específica dentro de la salida de objdump.
+    Obtiene el código hexadecimal de la instrucción ubicada en la dirección 0.
     """
 
     output = run_command([
@@ -99,17 +98,16 @@ def get_toolchain_hex(object_file, instruction_address):
         str(object_file)
     ])
 
-    # Busca la dirección exacta y los 8 dígitos hexadecimales.
+    # Busca la dirección 0 seguida de una instrucción de 32 bits.
     match = re.search(
-        rf"^\s*{instruction_address:x}:\s+([0-9a-fA-F]{{8}})\b",
+        r"^\s*0:\s+([0-9a-fA-F]{8})\b",
         output,
         re.MULTILINE
     )
 
     if not match:
         raise RuntimeError(
-            f"No se encontró la instrucción en la dirección "
-            f"{instruction_address}:\n{output}"
+            f"No se encontró una instrucción en la dirección 0:\n{output}"
         )
 
     return f"0x{match.group(1).lower()}"
@@ -144,65 +142,36 @@ def create_assembly(instruction, assembly_file):
     """
     Crea el archivo .s correspondiente.
 
-    Para branches se utiliza una etiqueta local. Así el ensamblador genera
-    una instrucción B directa en lugar de expandirla a bne + jal.
+    Para beq y bne, GNU assembler acepta expresiones relativas usando
+    el punto actual: .+16, .-80 o .+0.
     """
 
-    if not instruction.startswith(("beq ", "bne ")):
-        assembly_file.write_text(
+    if instruction.startswith(("beq ", "bne ")):
+        # Separa los operandos del offset numérico.
+        branch_without_offset, offset_text = instruction.rsplit(",", 1)
+        offset = int(offset_text.strip())
+
+        # Agrega explícitamente el signo al desplazamiento.
+        relative_target = f".{offset:+d}"
+
+        assembly = (
             ".section .text\n"
-            f"{instruction}\n",
+            f"{branch_without_offset}, {relative_target}\n"
+        )
+
+        assembly_file.write_text(
+            assembly,
             encoding="utf-8"
         )
-        return 0
 
-    # Separa el branch de su offset numérico.
-    branch_without_offset, offset_text = instruction.rsplit(",", 1)
-    offset = int(offset_text.strip())
+        return
 
-    if offset == 0:
-        # La etiqueta y el branch comienzan en la misma dirección.
-        assembly = (
-            ".section .text\n"
-            "target:\n"
-            f"{branch_without_offset}, target\n"
-        )
-
-        instruction_address = 0
-
-    elif offset > 0:
-        # El branch ocupa 4 bytes; el relleno completa el offset.
-        padding = offset - 4
-
-        assembly = (
-            ".section .text\n"
-            f"{branch_without_offset}, target\n"
-            f".space {padding}\n"
-            "target:\n"
-        )
-
-        instruction_address = 0
-
-    else:
-        # La etiqueta queda antes del branch para representar un offset
-        # negativo. El branch se ubica después del relleno.
-        padding = abs(offset)
-
-        assembly = (
-            ".section .text\n"
-            "target:\n"
-            f".space {padding}\n"
-            f"{branch_without_offset}, target\n"
-        )
-
-        instruction_address = padding
-
+    # Las instrucciones que no son branches se escriben directamente.
     assembly_file.write_text(
-        assembly,
+        ".section .text\n"
+        f"{instruction}\n",
         encoding="utf-8"
     )
-
-    return instruction_address
 
 
 def validate_case(case_number, category, instruction, temporary_dir):
@@ -214,8 +183,8 @@ def validate_case(case_number, category, instruction, temporary_dir):
     assembly_file = temporary_dir / f"case_{case_number}.s"
     object_file = temporary_dir / f"case_{case_number}.o"
 
-    # Genera el archivo ensamblador y obtiene la dirección del branch.
-    instruction_address = create_assembly(
+    # Genera el archivo ensamblador.
+    create_assembly(
         instruction,
         assembly_file
     )
@@ -232,10 +201,7 @@ def validate_case(case_number, category, instruction, temporary_dir):
     ])
 
     # Obtiene ambos códigos para compararlos.
-    official_hex = get_toolchain_hex(
-        object_file,
-        instruction_address
-    )
+    official_hex = get_toolchain_hex(object_file)
     model_hex = get_model_hex(instruction)
 
     status = "OK" if official_hex == model_hex else "ERROR"
