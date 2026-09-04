@@ -1,0 +1,6 @@
+# Archivos temporales generados por Python
+__pycache__/
+*.py[cod]
+*$py.class
+prueba_beq.s
+prueba_beq.o
